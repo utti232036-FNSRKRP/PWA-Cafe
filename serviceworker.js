@@ -1,4 +1,4 @@
-const CACHE_NAME = "devcoffee-v2";
+const CACHE_NAME = "devcoffee-v3";
 
 const ARCHIVOS = [
     "./",
@@ -39,37 +39,78 @@ self.addEventListener("activate", evento => {
     evento.waitUntil(
         caches.keys()
             .then(nombres => Promise.all(
-                nombres.filter(nombre => nombre !== CACHE_NAME)
+                nombres
+                    .filter(nombre => nombre !== CACHE_NAME)
                     .map(nombre => caches.delete(nombre))
             ))
             .then(() => self.clients.claim())
     );
 });
 
+async function cacheFirst(peticion) {
+    const cache = await caches.open(CACHE_NAME);
+    const guardado = await cache.match(peticion);
+
+    if (guardado) {
+        return guardado;
+    }
+
+    try {
+        const respuesta = await fetch(peticion);
+        if (respuesta && respuesta.ok && respuesta.type === "basic") {
+            cache.put(peticion, respuesta.clone());
+        }
+        return respuesta;
+    } catch (error) {
+        const alternativa = await cache.match(peticion, { ignoreSearch: true });
+        if (alternativa) {
+            return alternativa;
+        }
+        return new Response("", { status: 504, statusText: "Sin conexion" });
+    }
+}
+
+async function networkFirst(peticion) {
+    const cache = await caches.open(CACHE_NAME);
+
+    try {
+        const respuesta = await fetch(peticion);
+        if (respuesta && respuesta.ok && respuesta.type === "basic") {
+            cache.put(peticion, respuesta.clone());
+        }
+        return respuesta;
+    } catch (error) {
+        const guardado = await cache.match(peticion, { ignoreSearch: true });
+        if (guardado) {
+            return guardado;
+        }
+        const inicio = await cache.match("index.html");
+        if (inicio) {
+            return inicio;
+        }
+        return new Response("", { status: 504, statusText: "Sin conexion" });
+    }
+}
+
+function esPagina(peticion) {
+    return peticion.mode === "navigate" ||
+        (peticion.headers.get("accept") || "").includes("text/html");
+}
+
 self.addEventListener("fetch", evento => {
-    if (evento.request.method !== "GET") {
+    const peticion = evento.request;
+
+    if (peticion.method !== "GET") {
         return;
     }
 
-    evento.respondWith(
-        caches.match(evento.request)
-            .then(respuestaCache => {
-                if (respuestaCache) {
-                    return respuestaCache;
-                }
+    if (new URL(peticion.url).origin !== self.location.origin) {
+        return;
+    }
 
-                return fetch(evento.request)
-                    .then(respuestaRed => {
-                        if (!respuestaRed || respuestaRed.status !== 200 || respuestaRed.type !== "basic") {
-                            return respuestaRed;
-                        }
-
-                        const copia = respuestaRed.clone();
-                        caches.open(CACHE_NAME).then(cache => cache.put(evento.request, copia));
-                        return respuestaRed;
-                    })
-                    .catch(() => caches.match("index.html"));
-            })
-    );
+    if (esPagina(peticion)) {
+        evento.respondWith(networkFirst(peticion));
+    } else {
+        evento.respondWith(cacheFirst(peticion));
+    }
 });
-
